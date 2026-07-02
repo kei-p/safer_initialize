@@ -78,6 +78,41 @@ In `app/views/projects/index.html.haml`:
     = project.name
 ```
 
+## Deferred evaluation (avoiding N+1)
+
+`safer_initialize` runs inside `after_initialize`, which fires while each record
+is being built — *before* Rails resolves `includes`/`preload`. If your check
+touches an association, it triggers a query per record (N+1), even when the
+query eager-loads that association.
+
+Wrap the load in `SaferInitialize.defer` to queue the checks and evaluate them
+after the block finishes, once preloading is done:
+
+```ruby
+SaferInitialize.defer do
+  # Loading through `user.projects` sets the inverse for `project.user`, but not for
+  # `project.tenant` — so the tenant check's `project.tenant` needs a query per row.
+  # `includes(:tenant)` eager-loads it, but the check runs in `after_initialize` —
+  # before the preload resolves — so it still N+1s without `defer`.
+  projects = current_user.projects.includes(:tenant).to_a
+  # checks are queued here, not evaluated yet
+  render_something(projects)
+end
+# checks run at the block end — the preload is done, so `project.tenant` is cached (no N+1)
+```
+
+(`current_tenant.projects` would not N+1 here: loading through that association sets the
+inverse, so `project.tenant` is already resolved and `includes(:tenant)` is unnecessary.)
+
+Notes:
+
+- Outside a `defer` block the behavior is unchanged (immediate evaluation).
+- Globals (e.g. `tenant`) are expected to stay constant inside the block; set
+  them before entering `defer`, not within it. `with_safe` still skips checks
+  as usual.
+- If the block raises, the queue is discarded without running the checks.
+- `defer` cannot be nested.
+
 ## License
 
 The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
